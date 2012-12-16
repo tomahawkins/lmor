@@ -21,11 +21,11 @@ cabal-version: >= 1.8
 executable lmor
   main-is: Main.hs
   build-depends:
-    base       >= 4.0 && < 5,
-    mtl        >= 2.0,
-    bytestring >= 0.9,
-    elf        >= 0.27,
-    harpy      >= 0.5
+    base         >= 4.0 && < 5,
+    mtl          >= 2.0,
+    bytestring   >= 0.9,
+    elf          >= 0.26,
+    disassembler >= 0.2
 
   extensions:
 
