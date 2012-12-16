@@ -18,14 +18,18 @@ homepage: http://github.com/tomahawkins/lmor
 build-type:    Simple
 cabal-version: >= 1.8
 
-executable lmor
-  main-is: Main.hs
+library
+  --main-is: Main.hs
   build-depends:
     base         >= 4.0 && < 5,
+    process      >= 1.1,
     mtl          >= 2.0,
     bytestring   >= 0.9,
-    elf          >= 0.26,
-    disassembler >= 0.2
+    elf          >= 0.26 
+    --disassembler >= 0.2
+
+  exposed-modules:
+    LMOR
 
   extensions:
 
