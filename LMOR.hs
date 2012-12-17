@@ -1,7 +1,6 @@
 module LMOR
   ( extractText
   , branchTargets
-  , newElf
   , search
   ) where
 
@@ -69,33 +68,16 @@ branchTargets program = mapMaybe f [0 .. B.length program - 1]
     word = foldl1 (.|.) [ shiftL (fromIntegral b) s | (b, s) <- zip bytes [24, 16 .. 0] ]
     address = (fromIntegral (fromIntegral word :: Int32) :: Int) + i + 1
 
--- | Creates a new elf given a list of return points.
-newElf :: ByteString -> [Int] -> ByteString
-newElf f i = r $ setReturns p i
-  where
-  (p, _, _, r) = extractText f
-
--- | Sets a return at a given index.
-setReturn :: ByteString -> Int -> ByteString
-setReturn program i = B.concat [before, B.singleton 0xc3, B.drop 1 after]
-  where
-  (before, after) = B.splitAt i program
-
-setReturns :: ByteString -> [Int] -> ByteString
-setReturns = foldl setReturn
-
 -- | Search for canidates.
 search :: FilePath -> Int -> ((ExitCode, String, String) -> IO Bool) -> [String] -> Int -> [[Int]] -> IO [[Int]]
-search exe textLoc valid args timeoutUS targets = filterM f targets
+search exe textLoc valid args timeoutUS targets = do
+  filterM f targets
   where
   f :: [Int] -> IO Bool
   f i = do
-    h <- openFile exe ReadWriteMode
-    chars <- mapM (writeC3 h) i
-    hFlush h
+    chars <- withBinaryFile exe ReadWriteMode $ \ h -> mapM (writeC3 h) i
     r <- timeout timeoutUS $ readProcessWithExitCode exe args "" >>= valid
-    mapM_ (restore h) $ zip i chars
-    hClose h
+    withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (restore h) $ zip i chars
     case r of
       Nothing -> return False
       Just a  -> do
