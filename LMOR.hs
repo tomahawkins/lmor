@@ -1,6 +1,7 @@
 module LMOR
   ( extractText
   , branchTargets
+  , newElf
   , search
   ) where
 
@@ -51,6 +52,7 @@ extractText file = (textData, elfSectionAddr text, reconstruct)
   (before, rest) = B.breakSubstring textData file
   reconstruct text = B.concat [before, text, B.drop (B.length textData) rest]
 
+
 -- | Possible branch targets.
 branchTargets :: ByteString -> [Int]
 branchTargets program = mapMaybe f [0 .. B.length program - 1]
@@ -65,24 +67,33 @@ branchTargets program = mapMaybe f [0 .. B.length program - 1]
     word = foldl1 (.|.) [ shiftL (fromIntegral b) s | (b, s) <- zip bytes [24, 16 .. 0] ]
     address = (fromIntegral (fromIntegral word :: Int32) :: Int) + i + 1
 
+-- | Creates a new elf given a list of return points.
+newElf :: ByteString -> [Int] -> ByteString
+newElf f i = r $ setReturns p i
+  where
+  (p, _, r) = extractText f
+
 -- | Sets a return at a given index.
 setReturn :: ByteString -> Int -> ByteString
 setReturn program i = B.concat [before, B.singleton 0xc3, B.drop 1 after]
   where
   (before, after) = B.splitAt i program
 
+setReturns :: ByteString -> [Int] -> ByteString
+setReturns = foldl setReturn
+
 -- | Search for canidates.
-search :: ((ExitCode, String, String) -> Bool) -> [String] -> Int -> (ByteString, ByteString -> ByteString) -> [Int] -> IO [Int]
+search :: ((ExitCode, String, String) -> IO Bool) -> [String] -> Int -> (ByteString, ByteString -> ByteString) -> [[Int]] -> IO [[Int]]
 search valid args timeoutUS (program, reconstruct) targets = filterM f targets
   where
-  f :: Int -> IO Bool
+  f :: [Int] -> IO Bool
   f i = do
-    B.writeFile "lmor_test" $ reconstruct $ setReturn program i
-    r <- timeout timeoutUS $ readProcessWithExitCode "./lmor_test" args "" >>= return . valid
+    B.writeFile "lmor_test" $ reconstruct $ setReturns program i
+    r <- timeout timeoutUS $ readProcessWithExitCode "./lmor_test" args "" >>= valid
     case r of
       Nothing -> return False
       Just a  -> do
-        printf "%08x%s\n" i (if a then " : ** PASS **" else "")
+        when a $ printf "%s : ** PASS **\n" (show i)
         return a
     
 
