@@ -9,11 +9,13 @@ import Control.Monad
 import Data.Bits
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.Char
 import Data.Elf
 import Data.Int
 import Data.Maybe
 import Data.Word
 import System.Exit
+import System.IO
 import System.Process
 import System.Timeout
 --import System.Environment
@@ -41,8 +43,8 @@ import Text.Printf
 --     -}
 
 -- | Return the .text section, the address of the section, and a function to reconstruct the elf file with a modified .text section.
-extractText :: ByteString -> (ByteString, Word64, ByteString -> ByteString)
-extractText file = (textData, elfSectionAddr text, reconstruct)
+extractText :: ByteString -> (ByteString, Word64, Int, ByteString -> ByteString)
+extractText file = (textData, elfSectionAddr text, B.length before, reconstruct)
   where
   elf = parseElf file
   text = case [ s | s <- elfSections elf, elfSectionName s == ".text", elem SHF_EXECINSTR $ elfSectionFlags s ] of
@@ -71,7 +73,7 @@ branchTargets program = mapMaybe f [0 .. B.length program - 1]
 newElf :: ByteString -> [Int] -> ByteString
 newElf f i = r $ setReturns p i
   where
-  (p, _, r) = extractText f
+  (p, _, _, r) = extractText f
 
 -- | Sets a return at a given index.
 setReturn :: ByteString -> Int -> ByteString
@@ -83,17 +85,33 @@ setReturns :: ByteString -> [Int] -> ByteString
 setReturns = foldl setReturn
 
 -- | Search for canidates.
-search :: ((ExitCode, String, String) -> IO Bool) -> [String] -> Int -> (ByteString, ByteString -> ByteString) -> [[Int]] -> IO [[Int]]
-search valid args timeoutUS (program, reconstruct) targets = filterM f targets
+search :: FilePath -> Int -> ((ExitCode, String, String) -> IO Bool) -> [String] -> Int -> [[Int]] -> IO [[Int]]
+search exe textLoc valid args timeoutUS targets = filterM f targets
   where
   f :: [Int] -> IO Bool
   f i = do
-    B.writeFile "lmor_test" $ reconstruct $ setReturns program i
-    r <- timeout timeoutUS $ readProcessWithExitCode "./lmor_test" args "" >>= valid
+    h <- openFile exe ReadWriteMode
+    chars <- mapM (writeC3 h) i
+    hFlush h
+    r <- timeout timeoutUS $ readProcessWithExitCode exe args "" >>= valid
+    mapM_ (restore h) $ zip i chars
+    hClose h
     case r of
       Nothing -> return False
       Just a  -> do
         when a $ printf "%s : ** PASS **\n" (show i)
         return a
-    
+
+  writeC3 :: Handle -> Int -> IO Char
+  writeC3 h i = do
+    hSeek h AbsoluteSeek $ fromIntegral $ textLoc + i
+    c <- hGetChar h
+    hSeek h AbsoluteSeek $ fromIntegral $ textLoc + i
+    hPutChar h $ chr 0xc3
+    return c
+
+  restore :: Handle -> (Int, Char) -> IO ()
+  restore h (i, c) = do
+    hSeek h AbsoluteSeek $ fromIntegral $ textLoc + i
+    hPutChar h c
 
