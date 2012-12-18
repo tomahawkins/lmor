@@ -1,65 +1,50 @@
 module LMOR
-  ( extractText
-  , branchTargets
+  ( writeTextSection
+  , callTargets
+  , Branch (..)
+  , branches
   , search
+  , modifyBinary
+  , modifyBinary_
   ) where
 
-import Control.Monad
 import Data.Bits
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
-import Data.Char
 import Data.Elf
 import Data.Int
 import Data.Maybe
+import qualified Data.IntSet as S
+import qualified Data.Set as Set
 import Data.Word
 import System.Exit
 import System.IO
 import System.Process
-import System.Timeout
---import System.Environment
---import Text.Disassembler.X86Disassembler
 import Text.Printf
 
--- main :: IO ()
--- main = do
---   args <- getArgs
---   case args of
---     [file] -> analyze file
---     _ -> return ()
--- 
--- analyze :: FilePath -> IO ()
--- analyze file = do
---   f <- B.readFile file
---   let (text, addr, reconstruct) = extractText f
---   printf "%08x\n" addr
---   print $ length $ branchTargets text
---   {-
---   r <- disassembleList (B.unpack $ B.take 100 text)
---   case r of
---     Left e -> print e
---     Right i -> mapM_ print i
---     -}
-
--- | Return the .text section, the address of the section, and a function to reconstruct the elf file with a modified .text section.
-extractText :: ByteString -> (ByteString, Word64, Int, ByteString -> ByteString)
-extractText file = (textData, elfSectionAddr text, B.length before, reconstruct)
+textSection :: ByteString -> (ByteString, Int)
+textSection file = (textData, B.length $ fst $ B.breakSubstring textData file)
   where
   elf = parseElf file
   text = case [ s | s <- elfSections elf, elfSectionName s == ".text", elem SHF_EXECINSTR $ elfSectionFlags s ] of
     [s] -> s
     _   -> error "Single .text section not found."
   textData = elfSectionData text
-  (before, rest) = B.breakSubstring textData file
-  reconstruct text = B.concat [before, text, B.drop (B.length textData) rest]
 
+writeTextSection :: FilePath -> FilePath -> IO ()
+writeTextSection a b = do
+  a <- B.readFile a
+  let (text, _) = textSection a
+  B.writeFile b text
 
--- | Possible branch targets.
-branchTargets :: ByteString -> [Int]
-branchTargets program = mapMaybe f [0 .. B.length program - 1]
+callTargets :: FilePath -> IO [Int]
+callTargets file = do
+  file <- B.readFile file
+  let (textData, textLoc) = textSection file
+  return $ map (textLoc +) $ S.toList $ S.fromList $ mapMaybe (f textData) [0 .. B.length textData - 1]
   where
-  f :: Int -> Maybe Int
-  f i
+  f :: ByteString -> Int -> Maybe Int
+  f program i
     | B.index program i == 0xe8 && i < B.length program - 4 && address >= 0 && address < B.length program = Just address
     | otherwise = Nothing
     where
@@ -68,32 +53,49 @@ branchTargets program = mapMaybe f [0 .. B.length program - 1]
     word = foldl1 (.|.) [ shiftL (fromIntegral b) s | (b, s) <- zip bytes [24, 16 .. 0] ]
     address = (fromIntegral (fromIntegral word :: Int32) :: Int) + i + 1
 
--- | Search for canidates.
-search :: FilePath -> Int -> ((ExitCode, String, String) -> IO Bool) -> [String] -> Int -> [[Int]] -> IO [[Int]]
-search exe textLoc valid args timeoutUS targets = do
-  filterM f targets
+data Branch = JE | JNE | JE' | JNE' deriving (Show, Eq, Ord)
+
+branches :: FilePath -> IO [(Int, Branch)]
+branches file = do
+  file <- B.readFile file
+  let (textData, textLoc) = textSection file
+  return [ (i + textLoc, b) | (i, b) <- Set.toList $ Set.fromList $ mapMaybe (f textData) [0 .. B.length textData - 1] ]
   where
-  f :: [Int] -> IO Bool
-  f i = do
-    chars <- withBinaryFile exe ReadWriteMode $ \ h -> mapM (writeC3 h) i
-    r <- timeout timeoutUS $ readProcessWithExitCode exe args "" >>= valid
-    withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (restore h) $ zip i chars
-    case r of
-      Nothing -> return False
-      Just a  -> do
-        when a $ printf "%s : ** PASS **\n" (show i)
-        return a
+  f :: ByteString -> Int -> Maybe (Int, Branch)
+  f program i
+    | B.index program i == 0x74 = Just (i, JE)
+    | B.index program i == 0x75 = Just (i, JNE)
+    | otherwise = Nothing
 
-  writeC3 :: Handle -> Int -> IO Char
-  writeC3 h i = do
-    hSeek h AbsoluteSeek $ fromIntegral $ textLoc + i
-    c <- hGetChar h
-    hSeek h AbsoluteSeek $ fromIntegral $ textLoc + i
-    hPutChar h $ chr 0xc3
-    return c
+search :: FilePath -> ((ExitCode, String, String) -> IO Bool) -> [String] -> [[(Int, Char)]] -> IO ()
+search exe valid args targets = mapM_ f $ zip [1 ..] targets
+  where
+  f :: (Int, [(Int, Char)]) -> IO ()
+  f (i, mods) = do
+    mods' <- modifyBinary exe mods
+    printf "%d. %s" i (show mods)
+    hFlush stdout
+    r <- readProcessWithExitCode exe args "" >>= valid
+    modifyBinary_ exe mods'
+    printf "%s\n" (if r then ": ** PASS **" else "")
+    hFlush stdout
 
-  restore :: Handle -> (Int, Char) -> IO ()
-  restore h (i, c) = do
-    hSeek h AbsoluteSeek $ fromIntegral $ textLoc + i
+modifyBinary :: FilePath -> [(Int, Char)] -> IO [(Int, Char)]
+modifyBinary exe mods = withBinaryFile exe ReadWriteMode $ \ h -> mapM (f h) mods
+  where
+  f :: Handle -> (Int, Char) -> IO (Int, Char)
+  f h (i, c) = do
+    hSeek h AbsoluteSeek $ fromIntegral i
+    c' <- hGetChar h
+    hSeek h AbsoluteSeek $ fromIntegral i
+    hPutChar h c
+    return (i, c')
+
+modifyBinary_ :: FilePath -> [(Int, Char)] -> IO ()
+modifyBinary_ exe mods = withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (f h) mods
+  where
+  f :: Handle -> (Int, Char) -> IO ()
+  f h (i, c) = do
+    hSeek h AbsoluteSeek $ fromIntegral i
     hPutChar h c
 
