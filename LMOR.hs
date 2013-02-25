@@ -64,6 +64,8 @@ branches file = do
   f program i
     | B.index program i == 0x74 = Just i
     | B.index program i == 0x75 = Just i
+    | B.index program i == 0x0f && B.index program (i + 1) == 0x84 = Just i
+    | B.index program i == 0x0f && B.index program (i + 1) == 0x85 = Just i
     | otherwise = Nothing
 
 search :: FilePath -> ((ExitCode, String, String) -> IO Bool) -> FilePath -> [String] -> [Int] -> IO ()
@@ -86,10 +88,23 @@ modifyBinary exe m = withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (f h) m
   f h i = do
     hSeek h AbsoluteSeek $ fromIntegral i
     c <- hGetChar h
-    hSeek h AbsoluteSeek $ fromIntegral i
     case ord c of
-      0x74 -> hPutChar h $ chr 0x75
-      0x75 -> hPutChar h $ chr 0x74
+      0x74 -> do
+        hSeek h AbsoluteSeek $ fromIntegral i
+        hPutChar h $ chr 0x75
+      0x75 -> do
+        hSeek h AbsoluteSeek $ fromIntegral i
+        hPutChar h $ chr 0x74
+      0x0f -> do
+        c <- hGetChar h
+        case ord c of
+          0x84 -> do
+            hSeek h AbsoluteSeek $ fromIntegral $ i + 1
+            hPutChar h $ chr 0x85
+          0x85 -> do
+            hSeek h AbsoluteSeek $ fromIntegral $ i + 1
+            hPutChar h $ chr 0x84
+          _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
       _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
 
 modifyBinary' :: FilePath -> [(Int, Word8)] -> IO ()
