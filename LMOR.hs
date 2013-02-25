@@ -1,16 +1,17 @@
 module LMOR
   ( writeTextSection
   , callTargets
-  , Branch (..)
   , branches
   , search
   , modifyBinary
-  , modifyBinary_
+  , modifyBinary'
   ) where
 
+import Control.Monad (when)
 import Data.Bits
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.Char (ord, chr)
 import Data.Elf
 import Data.Int
 import Data.Maybe
@@ -53,49 +54,49 @@ callTargets file = do
     word = foldl1 (.|.) [ shiftL (fromIntegral b) s | (b, s) <- zip bytes [24, 16 .. 0] ]
     address = (fromIntegral (fromIntegral word :: Int32) :: Int) + i + 1
 
-data Branch = JE | JNE | JE' | JNE' deriving (Show, Eq, Ord)
-
-branches :: FilePath -> IO [(Int, Branch)]
+branches :: FilePath -> IO [Int]
 branches file = do
   file <- B.readFile file
   let (textData, textLoc) = textSection file
-  return [ (i + textLoc, b) | (i, b) <- Set.toList $ Set.fromList $ mapMaybe (f textData) [0 .. B.length textData - 1] ]
+  return [ i + textLoc | i <- Set.toList $ Set.fromList $ mapMaybe (f textData) [0 .. B.length textData - 1] ]
   where
-  f :: ByteString -> Int -> Maybe (Int, Branch)
+  f :: ByteString -> Int -> Maybe Int
   f program i
-    | B.index program i == 0x74 = Just (i, JE)
-    | B.index program i == 0x75 = Just (i, JNE)
+    | B.index program i == 0x74 = Just i
+    | B.index program i == 0x75 = Just i
     | otherwise = Nothing
 
-search :: FilePath -> ((ExitCode, String, String) -> IO Bool) -> [String] -> [[(Int, Char)]] -> IO ()
-search exe valid args targets = mapM_ f $ zip [1 ..] targets
+search :: FilePath -> ((ExitCode, String, String) -> IO Bool) -> FilePath -> [String] -> [Int] -> IO ()
+search exe valid cmd args targets = mapM_ f $ zip [1 ..] targets
   where
-  f :: (Int, [(Int, Char)]) -> IO ()
-  f (i, mods) = do
-    mods' <- modifyBinary exe mods
-    printf "%d. %s" i (show mods)
+  f :: (Int, Int) -> IO ()
+  f (i, m) = do
+    modifyBinary exe [m]
+    printf "%d. %d\n" i m
     hFlush stdout
-    r <- readProcessWithExitCode exe args "" >>= valid
-    modifyBinary_ exe mods'
-    printf "%s\n" (if r then ": ** PASS **" else "")
+    r <- readProcessWithExitCode cmd args "" >>= valid
+    modifyBinary exe [m]
+    when r $ putStrLn "** PASS **"
     hFlush stdout
 
-modifyBinary :: FilePath -> [(Int, Char)] -> IO [(Int, Char)]
-modifyBinary exe mods = withBinaryFile exe ReadWriteMode $ \ h -> mapM (f h) mods
+modifyBinary :: FilePath -> [Int] -> IO ()
+modifyBinary exe m = withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (f h) m
   where
-  f :: Handle -> (Int, Char) -> IO (Int, Char)
-  f h (i, c) = do
+  f :: Handle -> Int -> IO ()
+  f h i = do
     hSeek h AbsoluteSeek $ fromIntegral i
-    c' <- hGetChar h
+    c <- hGetChar h
     hSeek h AbsoluteSeek $ fromIntegral i
-    hPutChar h c
-    return (i, c')
+    case ord c of
+      0x74 -> hPutChar h $ chr 0x75
+      0x75 -> hPutChar h $ chr 0x74
+      _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
 
-modifyBinary_ :: FilePath -> [(Int, Char)] -> IO ()
-modifyBinary_ exe mods = withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (f h) mods
+modifyBinary' :: FilePath -> [(Int, Word8)] -> IO ()
+modifyBinary' exe mods = withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (f h) mods
   where
-  f :: Handle -> (Int, Char) -> IO ()
+  f :: Handle -> (Int, Word8) -> IO ()
   f h (i, c) = do
     hSeek h AbsoluteSeek $ fromIntegral i
-    hPutChar h c
+    hPutChar h $ chr $ fromIntegral c
 
