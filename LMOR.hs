@@ -4,7 +4,10 @@ module LMOR
   , branches
   , search
   , modifyBinary
-  , modifyBinary'
+  , setByte
+  , invertBranch
+  , takeBranch
+  , passBranch
   ) where
 
 import Control.Monad (when)
@@ -73,45 +76,105 @@ search exe valid cmd args targets = mapM_ f $ zip [1 ..] targets
   where
   f :: (Int, Int) -> IO ()
   f (i, m) = do
-    modifyBinary exe [m]
+    modifyBinary exe [invertBranch m]
     printf "%d. %d\n" i m
     hFlush stdout
     r <- readProcessWithExitCode cmd args "" >>= valid
-    modifyBinary exe [m]
+    modifyBinary exe [invertBranch m]
     when r $ putStrLn "** PASS **"
     hFlush stdout
 
-modifyBinary :: FilePath -> [Int] -> IO ()
-modifyBinary exe m = withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (f h) m
-  where
-  f :: Handle -> Int -> IO ()
-  f h i = do
-    hSeek h AbsoluteSeek $ fromIntegral i
-    c <- hGetChar h
-    case ord c of
-      0x74 -> do
-        hSeek h AbsoluteSeek $ fromIntegral i
-        hPutChar h $ chr 0x75
-      0x75 -> do
-        hSeek h AbsoluteSeek $ fromIntegral i
-        hPutChar h $ chr 0x74
-      0x0f -> do
-        c <- hGetChar h
-        case ord c of
-          0x84 -> do
-            hSeek h AbsoluteSeek $ fromIntegral $ i + 1
-            hPutChar h $ chr 0x85
-          0x85 -> do
-            hSeek h AbsoluteSeek $ fromIntegral $ i + 1
-            hPutChar h $ chr 0x84
-          _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
-      _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
+modifyBinary :: FilePath -> [Handle -> IO ()] -> IO ()
+modifyBinary bin mods = withBinaryFile bin ReadWriteMode $ \ h -> sequence_ [ f h | f <- mods ]
 
-modifyBinary' :: FilePath -> [(Int, Word8)] -> IO ()
-modifyBinary' exe mods = withBinaryFile exe ReadWriteMode $ \ h -> mapM_ (f h) mods
-  where
-  f :: Handle -> (Int, Word8) -> IO ()
-  f h (i, c) = do
-    hSeek h AbsoluteSeek $ fromIntegral i
-    hPutChar h $ chr $ fromIntegral c
+setByte :: Int -> Word8 -> Handle -> IO ()
+setByte addr byte h = do
+  hSeek h AbsoluteSeek $ fromIntegral addr
+  hPutChar h $ chr $ fromIntegral byte
+
+invertBranch :: Int -> Handle -> IO ()
+invertBranch i h = do
+  hSeek h AbsoluteSeek $ fromIntegral i
+  c <- hGetChar h
+  case ord c of
+    0x74 -> do
+      hSeek h AbsoluteSeek $ fromIntegral i
+      hPutChar h $ chr 0x75
+    0x75 -> do
+      hSeek h AbsoluteSeek $ fromIntegral i
+      hPutChar h $ chr 0x74
+    0x0f -> do
+      c <- hGetChar h
+      case ord c of
+        0x84 -> do
+          hSeek h AbsoluteSeek $ fromIntegral $ i + 1
+          hPutChar h $ chr 0x85
+        0x85 -> do
+          hSeek h AbsoluteSeek $ fromIntegral $ i + 1
+          hPutChar h $ chr 0x84
+        _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
+    _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
+
+takeBranch :: Int -> Handle -> IO ()
+takeBranch i h = do
+  hSeek h AbsoluteSeek $ fromIntegral i
+  a <- hGetChar h
+  b <- hGetChar h
+  case (a, b) of
+    (a, b)
+      | elem a [je, jne] -> do
+        hSeek h AbsoluteSeek $ fromIntegral i
+        hPutChar h jmp
+      | a == ext && elem b [jeq, jneq] -> do
+        hSeek h AbsoluteSeek $ fromIntegral i
+        hPutChar h jmpq
+        hGetChar h
+        a <- hGetChar h
+        hSeek h RelativeSeek (-2)
+        hPutChar h a
+        hGetChar h
+        a <- hGetChar h
+        hSeek h RelativeSeek (-2)
+        hPutChar h a
+        hGetChar h
+        a <- hGetChar h
+        hSeek h RelativeSeek (-2)
+        hPutChar h a
+        hGetChar h
+        a <- hGetChar h
+        hSeek h RelativeSeek (-2)
+        hPutChar h a
+        hPutChar h nop
+    _ -> error $ printf "Expected branch, but got something else at 0x%x.\n" i
+
+passBranch :: Int -> Handle -> IO ()
+passBranch i h = do
+  hSeek h AbsoluteSeek $ fromIntegral i
+  a <- hGetChar h
+  b <- hGetChar h
+  case (a, b) of
+    (a, b)
+      | elem a [je, jne] -> do
+        hSeek h AbsoluteSeek $ fromIntegral i
+        hPutChar h nop
+        hPutChar h nop
+      | a == ext && elem b [jeq, jneq] -> do
+        hSeek h AbsoluteSeek $ fromIntegral i
+        hPutChar h nop
+        hPutChar h nop
+        hPutChar h nop
+        hPutChar h nop
+        hPutChar h nop
+    _ -> error $ printf "Expected branch, but got something else at 0x%x.\n" i
+
+nop  = chr 0x90
+je   = chr 0x74
+jne  = chr 0x75
+jeq  = chr 0x84
+jneq = chr 0x85
+jmp  = chr 0xeb
+jmpq = chr 0xe9
+--xor  = chr 0x31
+--eax  = chr 0xc0
+ext  = chr 0x0f
 
