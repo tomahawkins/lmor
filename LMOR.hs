@@ -127,23 +127,16 @@ takeBranch i h = do
         hPutChar h jmp
       | a == ext && elem b [jeq, jneq] -> do
         hSeek h AbsoluteSeek $ fromIntegral i
+        hGetChar h
+        hGetChar h
+        a0 <- hGetChar h >>= return . ord
+        a1 <- hGetChar h >>= return . ord
+        a2 <- hGetChar h >>= return . ord
+        a3 <- hGetChar h >>= return . ord
+        let addr = foldl1 (.|.) [ shiftL a n | (n, a) <- zip [0, 8 ..] [a0, a1, a2, a3] ]  
+        hSeek h AbsoluteSeek $ fromIntegral i
         hPutChar h jmpq
-        hGetChar h
-        a <- hGetChar h
-        hSeek h RelativeSeek (-2)
-        hPutChar h a
-        hGetChar h
-        a <- hGetChar h
-        hSeek h RelativeSeek (-2)
-        hPutChar h a
-        hGetChar h
-        a <- hGetChar h
-        hSeek h RelativeSeek (-2)
-        hPutChar h a
-        hGetChar h
-        a <- hGetChar h
-        hSeek h RelativeSeek (-2)
-        hPutChar h a
+        sequence_ [ hPutChar h $ chr $ shiftR (addr + 1)  n .&. 0xff | n <- [0, 8, 16, 24] ]
         hPutChar h nop
     _ -> error $ printf "Expected branch, but got something else at 0x%x.\n" i
 
@@ -160,6 +153,7 @@ passBranch i h = do
         hPutChar h nop
       | a == ext && elem b [jeq, jneq] -> do
         hSeek h AbsoluteSeek $ fromIntegral i
+        hPutChar h nop
         hPutChar h nop
         hPutChar h nop
         hPutChar h nop
