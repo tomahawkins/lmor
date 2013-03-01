@@ -8,6 +8,8 @@ module LMOR
   , invertBranch
   , takeBranch
   , passBranch
+  , functions
+  , callGraph
   ) where
 
 import Control.Monad (when)
@@ -17,10 +19,12 @@ import qualified Data.ByteString as B
 import Data.Char (ord, chr)
 import Data.Elf
 import Data.Int
+import Data.List
 import Data.Maybe
 import qualified Data.IntSet as S
 import qualified Data.Set as Set
 import Data.Word
+import System.Directory
 import System.Exit
 import System.IO
 import System.Process
@@ -171,4 +175,73 @@ jmpq = chr 0xe9
 --xor  = chr 0x31
 --eax  = chr 0xc0
 ext  = chr 0x0f
+
+
+functions :: FilePath -> String -> IO [(String, String, [String])]
+functions file lib = readFile file >>= return . f1 . lines
+  where
+  f1 :: [String] -> [(String, String, [String])]
+  f1 a = case a of
+    [] -> []
+    a : rest
+      | isSuffixOf "@plt>:" a -> f1 rest
+      | isSuffixOf     ">:" a -> (lib, reverse $ drop 2 $ reverse $ drop 18 a, calls) : f1 rest'
+      | otherwise             -> f1 rest
+      where
+      (calls, rest') = f2 rest
+
+  f2 :: [String] -> ([String], [String])
+  f2 a = case a of
+    [] -> ([], [])
+    a : rest
+      | isSuffixOf ">:" a -> ([], a : rest)
+      | isPrefixOf "callq" line && notElem '+' line && last line == '>' -> (fun : funs, rest')
+      | otherwise -> f2 rest
+      where
+      fun = takeWhile (not . flip elem "@>") $ tail $ dropWhile (/= '<') line
+      (funs, rest') = f2 rest
+      line = drop 32 a
+
+callGraph :: [(FilePath, String)] -> IO ()
+callGraph libs = do
+  funs <- sequence [ functions lib name | (lib, name) <- libs ] >>= return . shrink . concat
+  dir <- getCurrentDirectory
+  createDirectoryIfMissing False $ dir ++ "/callGraph"
+  setCurrentDirectory $ dir ++ "/callGraph"
+  a <- getDirectoryContents (dir ++ "/callGraph")
+  sequence_ [ removeFile a | a <- a, isSuffixOf ".html" a ]
+  sequence_ [ writeFile (name l f ++ ".html") $ html funs (l, f, calls) | (l, f, calls) <- funs ]
+  where
+  {-
+  graph :: [(String, String, [String])] -> String
+  graph g' = "digraph callGraph {\n" ++ unlines (
+    [ printf "  \"%s.%s\";" l f | (l, f, _) <- g ] ++
+    [ printf "  \"%s.%s\" -> \"%s.%s\";" callerL callerF calleeL calleeF | (callerL, callerF, calls) <- g, (calleeL, calleeF, _) <- g, elem calleeF calls ]
+    ) ++ "}"
+    where
+    g = shrink g'
+    -}
+
+  shrink :: [(String, String, [String])] -> [(String, String, [String])]
+  shrink g = [ (m, f, c') | (m, f, c) <- g, let c' = filter (flip elem funcs) c, elem f calls || not (null c')  ]
+    where
+    funcs = [ f | (_, f, _) <- g ]
+    calls = concat [ filter (flip elem funcs) calls | (_, _, calls) <- g ]
+
+  html :: [(String, String, [String])] -> (String, String, [String]) -> String
+  html g (lib, fun, calls) = unlines
+    [ printf "<h2>Library: %s</h2>" lib
+    , printf "<h2>Function: %s</h2>" fun
+    , printf "<h3>Calls</h3>"
+    , printf "<ul>"
+    , unlines [ printf "  <li><a href=\"%s.html\">%s.%s</a></li>" (name l f) l f | callee <- calls, (l, f, _) <- g, callee == f ]
+    , printf "</ul>"
+    , printf "<h3>Callers</h3>"
+    , printf "<ul>"
+    , unlines [ printf "  <li><a href=\"%s.html\">%s.%s</a></li>" (name l f) l f | (l, f, c) <- g, elem fun c ]
+    , printf "</ul>"
+    ]
+
+  name :: String -> String -> String
+  name lib fun = take 200 $ lib ++ "." ++ fun
 
