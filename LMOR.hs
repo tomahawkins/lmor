@@ -224,18 +224,16 @@ callGraph libs = do
 -}
 
 data CallGraph = CallGraph
-  { cgFunctions
-  , cgLibraries :: M.IntMap String
+  { cgFunctions :: M.IntMap (String, String)  -- Library name, function name.
   , cgCallGraph :: [(Int, Int)]
   } deriving (Show, Read)
 
 callGraph :: [FilePath] -> IO CallGraph
 callGraph libs = do
   funs <- sequence [ parseAsm lib (libName lib) | lib <- libs ] >>= return . concat
-  let functions = M.fromList [ (hash f, f) | (_, f, _) <- funs ]
+  let functions = M.fromList [ (hash f, (l, f)) | (l, f, _) <- funs ]
   return CallGraph
     { cgFunctions = functions
-    , cgLibraries = M.fromList [ (hash f, l) | (l, f, _) <- funs ]
     , cgCallGraph = nub $ concat [ [ (hash f, hash call) | call <- calls, M.member (hash call) functions ] | (_, f, calls) <- funs ]
     }
   where
