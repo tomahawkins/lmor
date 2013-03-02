@@ -10,6 +10,7 @@ module LMOR
   , passBranch
   , CallGraph (..)
   , callGraph
+  , hashFun
   ) where
 
 import Control.Monad (when)
@@ -264,4 +265,7 @@ callGraph libs = do
         fun = takeWhile (not . flip elem "@>") $ tail $ dropWhile (/= '<') line
         (funs, rest') = f2 rest
         line = drop 32 a
+
+hashFun :: String -> Int
+hashFun = hash
 
