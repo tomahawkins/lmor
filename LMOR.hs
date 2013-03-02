@@ -8,7 +8,7 @@ module LMOR
   , invertBranch
   , takeBranch
   , passBranch
-  , functions
+  , CallGraph (..)
   , callGraph
   ) where
 
@@ -18,13 +18,14 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Char (ord, chr)
 import Data.Elf
+import Data.Hashable (hash)
 import Data.Int
 import Data.List
 import Data.Maybe
+import qualified Data.IntMap as M
 import qualified Data.IntSet as S
 import qualified Data.Set as Set
 import Data.Word
-import System.Directory
 import System.Exit
 import System.IO
 import System.Process
@@ -177,31 +178,7 @@ jmpq = chr 0xe9
 ext  = chr 0x0f
 
 
-functions :: FilePath -> String -> IO [(String, String, [String])]
-functions file lib = readFile file >>= return . f1 . lines
-  where
-  f1 :: [String] -> [(String, String, [String])]
-  f1 a = case a of
-    [] -> []
-    a : rest
-      | isSuffixOf "@plt>:" a -> f1 rest
-      | isSuffixOf     ">:" a -> (lib, reverse $ drop 2 $ reverse $ drop 18 a, calls) : f1 rest'
-      | otherwise             -> f1 rest
-      where
-      (calls, rest') = f2 rest
-
-  f2 :: [String] -> ([String], [String])
-  f2 a = case a of
-    [] -> ([], [])
-    a : rest
-      | isSuffixOf ">:" a -> ([], a : rest)
-      | isPrefixOf "callq" line && notElem '+' line && last line == '>' -> (fun : funs, rest')
-      | otherwise -> f2 rest
-      where
-      fun = takeWhile (not . flip elem "@>") $ tail $ dropWhile (/= '<') line
-      (funs, rest') = f2 rest
-      line = drop 32 a
-
+{-
 callGraph :: [(FilePath, String)] -> IO ()
 callGraph libs = do
   funs <- sequence [ functions lib name | (lib, name) <- libs ] >>= return . shrink . concat
@@ -244,4 +221,49 @@ callGraph libs = do
 
   name :: String -> String -> String
   name lib fun = take 200 $ lib ++ "." ++ fun
+-}
+
+data CallGraph = CallGraph
+  { cgFunctions
+  , cgLibraries :: M.IntMap String
+  , cgCallGraph :: [(Int, Int)]
+  } deriving (Show, Read)
+
+callGraph :: [FilePath] -> IO CallGraph
+callGraph libs = do
+  funs <- sequence [ parseAsm lib (libName lib) | lib <- libs ] >>= return . concat
+  let functions = M.fromList [ (hash f, f) | (_, f, _) <- funs ]
+  return CallGraph
+    { cgFunctions = functions
+    , cgLibraries = M.fromList [ (hash f, l) | (l, f, _) <- funs ]
+    , cgCallGraph = nub $ concat [ [ (hash f, hash call) | call <- calls, M.member (hash call) functions ] | (_, f, calls) <- funs ]
+    }
+  where
+  libName :: FilePath -> String
+  libName = takeWhile (/= '.') . reverse . takeWhile (/= '/') . reverse
+
+  parseAsm :: FilePath -> String -> IO [(String, String, [String])]
+  parseAsm file lib = readFile file >>= return . f1 . lines
+    where
+    f1 :: [String] -> [(String, String, [String])]
+    f1 a = case a of
+      [] -> []
+      a : rest
+        | isSuffixOf "@plt>:" a -> f1 rest
+        | isSuffixOf     ">:" a -> (lib, reverse $ drop 2 $ reverse $ drop 18 a, calls) : f1 rest'
+        | otherwise             -> f1 rest
+        where
+        (calls, rest') = f2 rest
+  
+    f2 :: [String] -> ([String], [String])
+    f2 a = case a of
+      [] -> ([], [])
+      a : rest
+        | isSuffixOf ">:" a -> ([], a : rest)
+        | isPrefixOf "callq" line && notElem '+' line && last line == '>' -> (fun : funs, rest')
+        | otherwise -> f2 rest
+        where
+        fun = takeWhile (not . flip elem "@>") $ tail $ dropWhile (/= '<') line
+        (funs, rest') = f2 rest
+        line = drop 32 a
 
