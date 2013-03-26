@@ -1,8 +1,8 @@
 module LMOR
   ( writeTextSection
-  , callTargets
-  , branches
-  , search
+  --, callTargets
+  --, branches
+  --, search
   , modifyBinary
   , setByte
   , invertBranch
@@ -11,25 +11,26 @@ module LMOR
   , CallGraph (..)
   , callGraph
   , hashFun
+  , gdbTrace
   ) where
 
-import Control.Monad (when)
+--import Control.Monad (when)
 import Data.Bits
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Char (ord, chr)
 import Data.Elf
 import Data.Hashable (hash)
-import Data.Int
+--import Data.Int
 import Data.List
-import Data.Maybe
+--import Data.Maybe
 import qualified Data.IntMap as M
-import qualified Data.IntSet as S
-import qualified Data.Set as Set
+--import qualified Data.IntSet as S
+--import qualified Data.Set as Set
 import Data.Word
-import System.Exit
+--import System.Exit
 import System.IO
-import System.Process
+--import System.Process
 import Text.Printf
 
 textSection :: ByteString -> (ByteString, Int)
@@ -47,6 +48,7 @@ writeTextSection a b = do
   let (text, _) = textSection a
   B.writeFile b text
 
+{-
 callTargets :: FilePath -> IO [Int]
 callTargets file = do
   file <- B.readFile file
@@ -89,6 +91,7 @@ search exe valid cmd args targets = mapM_ f $ zip [1 ..] targets
     modifyBinary exe [invertBranch m]
     when r $ putStrLn "** PASS **"
     hFlush stdout
+-}
 
 modifyBinary :: FilePath -> [Handle -> IO ()] -> IO ()
 modifyBinary bin mods = withBinaryFile bin ReadWriteMode $ \ h -> sequence_ [ f h | f <- mods ]
@@ -118,8 +121,8 @@ invertBranch i h = do
         0x85 -> do
           hSeek h AbsoluteSeek $ fromIntegral $ i + 1
           hPutChar h $ chr 0x84
-        _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
-    _ -> error $ printf "Expected JE or JNE, but got something else at 0x%x\n" i
+        a -> error $ printf "Expected JE or JNE, but got 0x%02x at 0x%x\n" a i
+    a -> error $ printf "Expected JE or JNE, but got 0x%02x at 0x%x\n" a i
 
 takeBranch :: Int -> Handle -> IO ()
 takeBranch i h = do
@@ -268,4 +271,46 @@ callGraph libs = do
 
 hashFun :: String -> Int
 hashFun = hash
+
+tracePoints :: (String -> Bool) -> FilePath -> IO [(String, Int, String)]  -- Library, address, label.
+tracePoints pred file = readFile file >>= return . f1 "" 0 . dropWhile (/= "Disassembly of section .text:") . lines
+  where
+  lib = reverse $ takeWhile (/= '/') $ drop 2 $ reverse file
+  f1 :: String -> Int -> [String] -> [(String, Int, String)]
+  f1 label labelAddr a = case a of
+    [] -> []
+    a : rest
+      | isSuffixOf ">:" a && notElem '.' label' && pred label' -> (lib, addr, label') : f1 label' addr rest
+      -- | any (flip isPrefixOf $ drop 32 a) ["je", "jne"] -> (lib, addr, label, addr - labelAddr) : f1 label labelAddr rest
+      | otherwise -> f1 label labelAddr rest
+      where
+      addr = read $ ("0x" ++) $ filter (/= ':') $ head $ words a
+      label' = reverse $ drop 2 $ reverse $ drop 1 $ words a !! 1
+
+gdbTrace :: (String -> Bool) -> [FilePath] -> IO String
+gdbTrace pred libs = mapM (tracePoints pred) libs >>= return . ("set breakpoint pending on\n" ++) . concatMap format . concat
+  where
+  format :: (String, Int, String) -> String
+  format (lib, addr, label) = unlines
+    [ printf "break %s" label
+    , printf "commands"
+    , printf "printf \"%s  %x\\n\"" lib addr
+    , printf "continue"
+    , printf "end"
+    ]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
