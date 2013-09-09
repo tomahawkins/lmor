@@ -134,7 +134,7 @@ takeBranch i h = do
       | elem a [je, jne] -> do
         hSeek h AbsoluteSeek $ fromIntegral i
         hPutChar h jmp
-      | a == ext && elem b [jeq, jneq] -> do
+      | a == ext && elem b [jeq, jneq, ja] -> do
         hSeek h AbsoluteSeek $ fromIntegral i
         hGetChar h
         hGetChar h
@@ -160,7 +160,7 @@ passBranch i h = do
         hSeek h AbsoluteSeek $ fromIntegral i
         hPutChar h nop
         hPutChar h nop
-      | a == ext && elem b [jeq, jneq] -> do
+      | a == ext && elem b [jeq, jneq, ja] -> do
         hSeek h AbsoluteSeek $ fromIntegral i
         hPutChar h nop
         hPutChar h nop
@@ -180,6 +180,8 @@ jmpq = chr 0xe9
 --xor  = chr 0x31
 --eax  = chr 0xc0
 ext  = chr 0x0f
+ja   = chr 0x87
+
 
 
 {-
